@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  terraform:
+    name: Terraform fmt + validate
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      # -backend=false because the module has no backend of its own; this only
+      # needs to resolve the google provider so validate can check resource
+      # schemas and the variable validation blocks.
+      - name: Validate root module
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+
+      # Examples source the module by relative path, so validating them catches
+      # a break in the public interface (a renamed or newly-required variable)
+      # that root-module validation alone would miss.
+      - name: Validate examples
+        run: |
+          for dir in examples/*/; do
+            echo "==> ${dir}"
+            terraform -chdir="${dir}" init -backend=false -input=false
+            terraform -chdir="${dir}" validate
+          done
