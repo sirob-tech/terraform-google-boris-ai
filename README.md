@@ -23,13 +23,19 @@ In your organization:
   binding that lets the federated identity impersonate it.
 - **Org-level read-only role bindings**: `roles/viewer`, `roles/browser`,
   `roles/iam.securityReviewer`, `roles/cloudasset.viewer`,
-  `roles/serviceusage.serviceUsageViewer`.
+  `roles/serviceusage.serviceUsageConsumer`.
 - A **sensitive-data deny policy** (org-level) blocking data-plane reads
   (Secret Manager, GCS object reads, SA key/token operations, BigQuery table
   data, Datastore/Spanner/Pub-Sub payloads, KMS decrypt) for `boris-reader`.
   Required by default; disable with `enable_deny_policy = false`.
+- A **custom role carrying `mcp.tools.call`**, bound to `boris-reader` on the
+  hosting project, which lets B.O.R.I.S call GCP's managed MCP servers. No
+  predefined role carries that permission — see
+  [Live access](#live-access-managed-mcp).
 - Required APIs enabled on a **hosting project** (created with a deterministic,
-  customer-derived ID, or an existing one you supply).
+  customer-derived ID, or an existing one you supply): `cloudasset`,
+  `cloudresourcemanager`, `iam`, `iamcredentials`, `sts` and `serviceusage`, plus
+  `cloudcli` and `container` for live access.
 
 ### Read scope, and what the deny policy does not cover
 
@@ -48,20 +54,64 @@ to `additional_denied_permissions` if it matters in your org:
 | Serial port output, which can echo boot-time secrets | `compute.googleapis.com/instances.getSerialPortOutput` |
 | Cloud Run and Cloud Functions service configs, whose `get` responses include plaintext environment variables | `run.googleapis.com/services.get`, `cloudfunctions.googleapis.com/functions.get` |
 | Cloud Logging entries, a common place for secrets and PII to land | `logging.googleapis.com/logEntries.list` |
+| Runtime Config variable values | **nothing — not deniable.** `roles/viewer` grants `runtimeconfig.variables.get`/`.list` and deny policies do not support those permissions, verified against a live policy. Drop `roles/viewer` if this matters to you |
+| Anything reachable through Cloud Asset Inventory — see below | **nothing.** Denying a permission does not close its CAI equivalent |
 
-Every permission above is verified against Google's
+**Cloud Asset Inventory is a second read path, and the deny policy does not
+touch it.** `roles/cloudasset.viewer` carries `cloudasset.assets.exportResource`,
+`queryResource` and `searchAllResources`, and CAI's `RESOURCE` content type
+returns the full resource JSON — a GCE instance's `metadata` block, a Cloud Run
+or Cloud Functions container's environment variables. The deny list names
+permissions on Secret Manager, Storage, IAM, KMS, BigQuery, Datastore, Spanner,
+Pub/Sub, API Keys, Cloud Functions and Vertex AI; **none on
+`cloudasset.googleapis.com`**.
+
+So adding `compute.googleapis.com/instances.get` to
+`additional_denied_permissions` does *not* close the instance-metadata path: the
+same bytes come back through `cloudasset.assets.exportResource`. The same is
+true of the Cloud Run and Cloud Functions rows above.
+
+**This is deliberate, not an oversight.** Cloud Asset Inventory is B.O.R.I.S's
+primary broad-read path — it is how the estate is inventoried without making
+thousands of per-service calls — so denying it would disable the product rather
+than harden it. Two things bound the exposure. Secret Manager **payloads are not
+reachable this way**: CAI exports secret version *metadata* only, so the
+strongest part of the guardrail is not bypassed. And the remaining exposure —
+environment variables and instance metadata — is being addressed on the
+B.O.R.I.S side by response-field redaction rather than by IAM, since IAM has no
+lever here.
+
+If that trade is not acceptable in your org, the lever is `org_viewer_roles`:
+drop `roles/cloudasset.viewer`. B.O.R.I.S's inventory features degrade
+accordingly.
+
+Every permission in the deny list is verified against a **live deny policy**
+before shipping, not merely against Google's
 [permissions supported in deny policies](https://cloud.google.com/iam/docs/deny-permissions-support).
 That list matters: **a deny policy naming an unsupported permission is rejected**,
 so check any addition of your own against it rather than inferring the string from
 an IAM role reference.
 
-**One gap the deny policy cannot close: GKE Kubernetes Secrets.** Deny policies
-support only `clusters.*` and `operations.*` for `container.googleapis.com`, so
-`container.secrets.*` cannot be denied at all — there is no permission to add. If
-your clusters hold Secrets and your org maps basic roles onto Kubernetes RBAC, the
-lever is `org_viewer_roles`: drop `roles/viewer` for a narrower set such as
-`roles/container.viewer`, which does not grant Secret access. Confirm what your own
-org grants with `gcloud iam roles describe roles/viewer`.
+**GKE Kubernetes Secrets, corrected.** An earlier version of this README said
+`container.secrets.*` cannot be denied and suggested swapping `roles/viewer` for
+`roles/container.viewer` on that basis. The swap does not buy what that implied:
+`roles/viewer` grants **no** `container.secrets.*` permission at all — 0 of the
+166 `container.*` permissions in the granted set — so there is no such IAM path
+open for the substitution to close. Confirm against your own org with
+`gcloud iam roles describe roles/viewer`.
+
+What remains true is that in-cluster access can come from your org mapping basic
+roles onto Kubernetes RBAC, which is a separate mechanism IAM deny policies do
+not reach. On the live Kubernetes read path B.O.R.I.S ships, that is covered
+without IAM: see below.
+
+On the **live** Kubernetes read path B.O.R.I.S ships (see below) the picture is
+better, because the control does not have to be a deny policy. A Secret read is
+refused twice — Google's managed MCP server returns nothing for one, and
+B.O.R.I.S refuses the kind before the call is made. A ConfigMap read, which
+Google *does* serve in full including its `data` map, is refused by that same
+client-side guard. Neither refusal depends on the deny policy, so both hold in an
+org where `container.secrets.*` is undeniable.
 
 This table is what we are aware of, not a proof of exhaustiveness — `roles/viewer`
 is a basic role and Google can widen it. To audit the remainder, diff
@@ -71,6 +121,101 @@ tell the B.O.R.I.S team.
 
 Moving secrets into Secret Manager also closes them off, since the deny policy
 blocks that service in full (`secretmanager.googleapis.com/*.*`).
+
+### Live access (managed MCP)
+
+Two of the enabled APIs and the custom role exist for one capability: letting
+B.O.R.I.S run read-only `gcloud` commands and read live Kubernetes objects, logs
+and events, rather than only querying the daily Cloud Asset Inventory snapshot.
+
+- **`cloudcli.googleapis.com`** — the Cloud CLI Execution API. B.O.R.I.S sends a
+  subcommand from a fixed allowlist; the API also applies Google's own
+  server-side forbidden-command and flag denylists.
+- **`container.googleapis.com`** — hosts the GKE managed MCP server behind the
+  live Kubernetes reads.
+- **The custom role.** Calling either managed MCP server requires
+  `mcp.googleapis.com/tools.call`, and **no predefined role grants it** — of the
+  586 roles grantable on a project, none includes any `mcp.*` permission. A
+  custom role is the only way to grant it, which is why this module creates one
+  instead of binding something off the shelf. It carries that single permission
+  and nothing else; `mcp_custom_role_id` renames it if `borisMcpToolCaller`
+  collides with something in your project.
+
+Three things worth knowing before you apply:
+
+- **`cloudcli` is a Preview API and is not covered by the Cloud TOS.** It carries
+  no SLA. If Preview services are not acceptable in your estate, this is the
+  bullet to escalate — in this module version the two APIs and the role are
+  enabled unconditionally, with no opt-out input.
+- **No GKE-specific role is needed.** `roles/viewer` alone drives the whole live
+  Kubernetes path. Neither `roles/container.viewer` nor
+  `roles/gkehub.gatewayReader` is required, and adding either only widens what
+  you have granted.
+- **Enablement is eventually consistent**, around a minute in our testing, and a
+  stale denial is indistinguishable from a missing grant. If a live read fails
+  immediately after `apply`, retry before treating it as misconfiguration.
+- **`gcloud` reads are rate-limited to roughly 6 per minute for your whole
+  organization**, and the limit has no self-service increase. The quota is
+  charged to the project the command executes in — the hosting project — not to
+  the project being read, so pointing reads at different projects does not raise
+  the ceiling. Two people asking B.O.R.I.S about your GCP estate at the same
+  time will contend for the same six calls. The Cloud Asset Inventory path that
+  `list_gcp_resources` uses is not affected; this applies only to
+  `run_gcloud_command`.
+- **`roles/serviceusage.serviceUsageConsumer` is in the granted set for this,
+  not `serviceUsageViewer`.** The two differ by exactly one permission,
+  `serviceusage.services.use`, and several gcloud surfaces refuse *every* read
+  without it — Cloud Storage measurably so, including bucket metadata that
+  `roles/viewer` already permits. It is not a data-access grant: it makes
+  `boris-reader` a consumer of the project, which is what allows a request to be
+  billed to it. The practical consequence is that B.O.R.I.S can spend your API
+  quota, which it could already do on the hosting project.
+
+### Telling one B.O.R.I.S read from another in your audit log
+
+Every read B.O.R.I.S makes lands in your Cloud Audit Logs as the same
+`principalEmail` — `boris-reader@<hosting-project>.iam.gserviceaccount.com` —
+because it impersonates that one service account for everything. Filtering on
+`principalEmail` alone therefore tells you *that* B.O.R.I.S read something, never
+which conversation asked.
+
+The discriminator is one level down, in the delegation chain:
+
+```
+protoPayload.authenticationInfo.serviceAccountDelegationInfo[0].principalSubject
+```
+
+which reads, in full:
+
+```
+principal://iam.googleapis.com/projects/<number>/locations/global/
+  workloadIdentityPools/boris-aws/subject/
+  arn:aws:sts::<vendor-account>:assumed-role/boris-ai-gcp-access/<session>
+```
+
+That trailing `<session>` is a per-conversation identifier. To pull every read
+belonging to one conversation:
+
+```bash
+gcloud logging read \
+  'protoPayload.authenticationInfo.serviceAccountDelegationInfo.principalSubject:"<session>"' \
+  --project <your-project> --freshness 24h
+```
+
+Three things to know before relying on it:
+
+- **You must switch Data Access audit logs on.** They are off by default for
+  every service except BigQuery, and while they are off none of these entries
+  exist at all — not the read, not the delegation chain, nothing. Enable
+  `ADMIN_READ` and `DATA_READ` for the services you care about.
+- **Do not use `principalSubject` at the top level.** It is inconsistent: Cloud
+  Resource Manager fills it with the service account, and Cloud Storage leaves it
+  empty. `serviceAccountDelegationInfo` is the field that carries the session.
+- **This is traceability, not a security boundary.** A role session name is
+  self-asserted — whoever assumes the AWS role chooses it. It answers "which
+  conversation caused this read" for debugging and billing. It cannot tell you
+  whether a caller was honest about who it was, and nothing should be built as
+  though it could.
 
 ### Everything here is an input you control
 
@@ -85,6 +230,16 @@ in your own Terraform:
 | `denied_permissions` | the full deny list | Replace the guardrail outright |
 | `additional_denied_permissions` | `[]` | Keep the shipped guardrail and block more |
 | `enable_deny_policy` | `true` | Opt out of the deny policy entirely |
+
+**A known structural weakness, stated rather than hidden.** Deny-listing a basic
+role is a losing game in the long run. `roles/viewer` alone resolves to over six
+thousand permissions — the full granted set across all five roles is 6,635 — and
+Google can widen it at any time. Every widening silently expands what this module
+grants in every org that took the default, and the deny list only ever catches
+what someone thought to name. An enumerated, audited role set would fail closed
+instead; that is the right end state and it is not what ships today. Until it
+does, `org_viewer_roles` is the lever, and the audit recipe below is the way to
+see what you have actually granted.
 
 `denied_permissions` and `additional_denied_permissions` are concatenated, so
 extending the default set never means restating it. Narrowing `org_viewer_roles`
@@ -257,10 +412,27 @@ with `gcloud organizations list` before applying, and check the plan's
 ### Reusing a project that already has a WIF pool or `boris-reader`
 
 If the project you point at (`create_project = false`) already contains a
-`boris-aws` pool or a `boris-reader` service account, `apply` fails with "already
-exists" — Terraform will not adopt resources it did not create. Either let the
-module create a fresh hosting project, or `terraform import` the existing pool,
-provider, and service account into state first.
+`boris-aws` pool, a `boris-reader` service account or a `borisMcpToolCaller`
+custom role, `apply` fails with "already exists" — Terraform will not adopt
+resources it did not create. Either let the module create a fresh hosting
+project, or `terraform import` what is already there into state first:
+
+```bash
+terraform import 'module.boris_gcp.google_iam_workload_identity_pool.boris' \
+  "projects/<project>/locations/global/workloadIdentityPools/boris-aws"
+terraform import 'module.boris_gcp.google_iam_workload_identity_pool_provider.aws' \
+  "projects/<project>/locations/global/workloadIdentityPools/boris-aws/providers/aws-sts"
+terraform import 'module.boris_gcp.google_service_account.boris_reader' \
+  "projects/<project>/serviceAccounts/boris-reader@<project>.iam.gserviceaccount.com"
+terraform import 'module.boris_gcp.google_project_iam_custom_role.mcp_tool_caller' \
+  "projects/<project>/roles/borisMcpToolCaller"
+```
+
+Enabled APIs need no import — `google_project_service` adopts an already-enabled
+service. The org role bindings and the `mcp.tools.call` binding are
+non-authoritative and re-apply cleanly over an existing grant. An existing deny
+policy does need importing, as
+`google_iam_deny_policy` with the ID from `terraform output` or the console.
 
 ## Offboarding
 
@@ -300,14 +472,25 @@ What the version numbers mean here:
   permission in the granted set, a removal from the deny list, or a breaking
   input change. B.O.R.I.S capabilities that need broader access ship this way, rather
   than silently widening what an existing pin already grants.
+
+  One deliberate exception, recorded rather than hidden: **`1.1.0` adds the
+  `mcp.tools.call` permission, the `cloudcli` and `container` APIs, and swaps
+  `roles/serviceusage.serviceUsageViewer` for
+  `roles/serviceusage.serviceUsageConsumer`** — changes the rule above would
+  otherwise make major. It shipped as a minor
+  because live access is still under test and `1.0.0` had not been adopted, so
+  there was no existing pin to widen. Read the plan before applying it; from
+  here on the major rule applies as written.
 - **Minor** — new optional inputs, new outputs, additional guardrails.
 - **Patch** — fixes and documentation.
 
 To upgrade, bump the constraint and run `terraform init -upgrade`, then read the
 plan before applying. The plan is the authoritative diff of what changes in your
 org: a release that widens read scope shows up as new
-`google_organization_iam_member` resources, and one that changes the guardrail
-shows up as a change to `google_iam_deny_policy`. Nothing changes until you
+`google_organization_iam_member` resources, one that grants a new project-level
+permission shows up as `google_project_iam_custom_role` plus
+`google_project_iam_member`, and one that changes the guardrail shows up as a
+change to `google_iam_deny_policy`. Nothing changes until you
 apply, so a new release never alters B.O.R.I.S's access on its own.
 
 Downgrading works the same way, though re-narrowing scope may degrade B.O.R.I.S
@@ -328,6 +511,13 @@ features that relied on the wider set.
   reserved prefix at plan time, which catches the common too-short mistake; it does
   not reproduce every GCP naming rule, so an exotic value (a leading or trailing
   hyphen, for instance) can still fail partway through `apply`.
+- The **custom role is a creation, not a grant of something pre-existing**, so a
+  security review that enumerates predefined roles will not find it. It holds
+  exactly one permission, `mcp.tools.call`. Read it back with
+  `gcloud iam roles describe borisMcpToolCaller --project <hosting project>`, or
+  take the `mcp_custom_role` output. Note the permission has two spellings and
+  neither is a typo: custom roles use the short `mcp.tools.call` form, while deny
+  policies use the fully-qualified `mcp.googleapis.com/tools.call` form.
 - The deny list is an explicit, auditable set of permissions — read the
   `denied_permissions` default in `variables.tf` before you apply. It is expressed
   as an org-level control that you own and can inspect, extend, replace, or

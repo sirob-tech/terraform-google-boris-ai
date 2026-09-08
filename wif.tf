@@ -22,9 +22,13 @@ resource "google_iam_workload_identity_pool_provider" "aws" {
     account_id = var.vendor_aws_account_id
   }
 
+  # aws_role stays normalized because attribute_condition and the impersonation
+  # binding both address it. subject and session_name carry the session name so
+  # the customer's audit log can tell one conversation from another.
   attribute_mapping = {
-    "google.subject"     = local.aws_role_mapping
-    "attribute.aws_role" = local.aws_role_mapping
+    "google.subject"             = local.aws_subject_mapping
+    "attribute.aws_role"         = local.aws_role_mapping
+    "attribute.aws_session_name" = local.aws_session_name_mapping
   }
 
   # Account-ID pinning alone trusts EVERY role in the vendor account. Restrict

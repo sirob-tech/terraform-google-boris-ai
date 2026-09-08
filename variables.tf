@@ -167,7 +167,19 @@ variable "org_viewer_roles" {
     "roles/browser",
     "roles/iam.securityReviewer",
     "roles/cloudasset.viewer",
-    "roles/serviceusage.serviceUsageViewer",
+
+    # Consumer rather than the narrower serviceUsageViewer, and the difference
+    # is exactly one permission: serviceusage.services.use. Several gcloud
+    # surfaces — Cloud Storage measurably, and any API that bills a request to a
+    # user project — refuse every read without it, including pure metadata
+    # reads. Measured: `gcloud storage buckets list` and `buckets describe` both
+    # returned 403 "does not have serviceusage.services.use access" under
+    # serviceUsageViewer, in every project rather than only in some.
+    #
+    # It is not a data-access grant. It makes boris-reader a *consumer* of the
+    # project, which is what lets a request be attributed to it — so it does let
+    # B.O.R.I.S spend your API quota, and grants nothing further.
+    "roles/serviceusage.serviceUsageConsumer",
   ]
 }
 
@@ -175,6 +187,25 @@ variable "additional_org_roles" {
   type        = list(string)
   description = "Extra org-level roles to grant boris-reader beyond org_viewer_roles."
   default     = []
+}
+
+# ---------------------------------------------------------------------------
+# Live access (managed MCP)
+# ---------------------------------------------------------------------------
+
+variable "mcp_custom_role_id" {
+  type        = string
+  description = "Role ID of the custom role carrying mcp.tools.call, which lets boris-reader call GCP's managed MCP servers. Project-scoped, so a fixed literal is safe here — unlike the deny policy, which attaches to the shared organization and needs a per-customer suffix. Role IDs beginning \"goog\" are reserved by Google."
+  default     = "borisMcpToolCaller"
+
+  # GCP custom role IDs are 3-64 characters of letters, digits, underscores and
+  # periods. Validated here so a bad value fails at plan time rather than partway
+  # through apply. The reserved-prefix rule is documented above rather than
+  # encoded, so a future legitimate value is not blocked by a guess.
+  validation {
+    condition     = can(regex("^[a-zA-Z0-9_.]{3,64}$", var.mcp_custom_role_id))
+    error_message = "mcp_custom_role_id must be 3-64 characters of letters, digits, \"_\" or \".\"."
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -235,6 +266,33 @@ variable "denied_permissions" {
     "datastore.googleapis.com/entities.list",
     "spanner.googleapis.com/sessions.create",
     "pubsub.googleapis.com/subscriptions.consume",
+
+    # Live credentials and source, which roles/viewer grants and the original
+    # list missed. getKeyString is the sharpest: it returns a usable API key
+    # rather than metadata about one, which is a different category from the
+    # configuration-disclosure paths above.
+    "apikeys.googleapis.com/keys.getKeyString",
+    "cloudfunctions.googleapis.com/functions.sourceCodeGet",
+
+    # Vertex AI agent memory, sessions and cached prompts. These hold arbitrary
+    # user-supplied content, which for this module's audience is the most likely
+    # place for a customer's own end-user data to sit.
+    "aiplatform.googleapis.com/memories.get",
+    "aiplatform.googleapis.com/memories.list",
+    "aiplatform.googleapis.com/memories.retrieve",
+    "aiplatform.googleapis.com/sessions.get",
+    "aiplatform.googleapis.com/sessions.list",
+    "aiplatform.googleapis.com/sessionEvents.list",
+    "aiplatform.googleapis.com/cachedContents.get",
+    "aiplatform.googleapis.com/cachedContents.list",
+
+    # Every string above was verified against a live deny policy before shipping,
+    # not against the documentation. That check is not optional: an unsupported
+    # permission is rejected at CREATE time, so it would fail every customer's
+    # apply rather than failing review. It caught two —
+    # runtimeconfig.googleapis.com/variables.get and .list are NOT deniable,
+    # though roles/viewer grants both. They are listed in the README as an
+    # uncovered path instead, because that is what they are.
   ]
 
   # A deny rule with no permissions is rejected by the API, which would surface
