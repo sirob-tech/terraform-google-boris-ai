@@ -54,20 +54,56 @@ to `additional_denied_permissions` if it matters in your org:
 | Serial port output, which can echo boot-time secrets | `compute.googleapis.com/instances.getSerialPortOutput` |
 | Cloud Run and Cloud Functions service configs, whose `get` responses include plaintext environment variables | `run.googleapis.com/services.get`, `cloudfunctions.googleapis.com/functions.get` |
 | Cloud Logging entries, a common place for secrets and PII to land | `logging.googleapis.com/logEntries.list` |
+| Runtime Config variable values | **nothing — not deniable.** `roles/viewer` grants `runtimeconfig.variables.get`/`.list` and deny policies do not support those permissions, verified against a live policy. Drop `roles/viewer` if this matters to you |
+| Anything reachable through Cloud Asset Inventory — see below | **nothing.** Denying a permission does not close its CAI equivalent |
 
-Every permission above is verified against Google's
+**Cloud Asset Inventory is a second read path, and the deny policy does not
+touch it.** `roles/cloudasset.viewer` carries `cloudasset.assets.exportResource`,
+`queryResource` and `searchAllResources`, and CAI's `RESOURCE` content type
+returns the full resource JSON — a GCE instance's `metadata` block, a Cloud Run
+or Cloud Functions container's environment variables. The deny list names
+permissions on Secret Manager, Storage, IAM, KMS, BigQuery, Datastore, Spanner,
+Pub/Sub, API Keys, Cloud Functions and Vertex AI; **none on
+`cloudasset.googleapis.com`**.
+
+So adding `compute.googleapis.com/instances.get` to
+`additional_denied_permissions` does *not* close the instance-metadata path: the
+same bytes come back through `cloudasset.assets.exportResource`. The same is
+true of the Cloud Run and Cloud Functions rows above.
+
+**This is deliberate, not an oversight.** Cloud Asset Inventory is B.O.R.I.S's
+primary broad-read path — it is how the estate is inventoried without making
+thousands of per-service calls — so denying it would disable the product rather
+than harden it. Two things bound the exposure. Secret Manager **payloads are not
+reachable this way**: CAI exports secret version *metadata* only, so the
+strongest part of the guardrail is not bypassed. And the remaining exposure —
+environment variables and instance metadata — is being addressed on the
+B.O.R.I.S side by response-field redaction rather than by IAM, since IAM has no
+lever here.
+
+If that trade is not acceptable in your org, the lever is `org_viewer_roles`:
+drop `roles/cloudasset.viewer`. B.O.R.I.S's inventory features degrade
+accordingly.
+
+Every permission in the deny list is verified against a **live deny policy**
+before shipping, not merely against Google's
 [permissions supported in deny policies](https://cloud.google.com/iam/docs/deny-permissions-support).
 That list matters: **a deny policy naming an unsupported permission is rejected**,
 so check any addition of your own against it rather than inferring the string from
 an IAM role reference.
 
-**One gap the deny policy cannot close: GKE Kubernetes Secrets.** Deny policies
-support only `clusters.*` and `operations.*` for `container.googleapis.com`, so
-`container.secrets.*` cannot be denied at all — there is no permission to add. If
-your clusters hold Secrets and your org maps basic roles onto Kubernetes RBAC, the
-lever is `org_viewer_roles`: drop `roles/viewer` for a narrower set such as
-`roles/container.viewer`, which does not grant Secret access. Confirm what your own
-org grants with `gcloud iam roles describe roles/viewer`.
+**GKE Kubernetes Secrets, corrected.** An earlier version of this README said
+`container.secrets.*` cannot be denied and suggested swapping `roles/viewer` for
+`roles/container.viewer` on that basis. The swap does not buy what that implied:
+`roles/viewer` grants **no** `container.secrets.*` permission at all — 0 of the
+166 `container.*` permissions in the granted set — so there is no such IAM path
+open for the substitution to close. Confirm against your own org with
+`gcloud iam roles describe roles/viewer`.
+
+What remains true is that in-cluster access can come from your org mapping basic
+roles onto Kubernetes RBAC, which is a separate mechanism IAM deny policies do
+not reach. On the live Kubernetes read path B.O.R.I.S ships, that is covered
+without IAM: see below.
 
 On the **live** Kubernetes read path B.O.R.I.S ships (see below) the picture is
 better, because the control does not have to be a deny policy. A Secret read is
@@ -194,6 +230,16 @@ in your own Terraform:
 | `denied_permissions` | the full deny list | Replace the guardrail outright |
 | `additional_denied_permissions` | `[]` | Keep the shipped guardrail and block more |
 | `enable_deny_policy` | `true` | Opt out of the deny policy entirely |
+
+**A known structural weakness, stated rather than hidden.** Deny-listing a basic
+role is a losing game in the long run. `roles/viewer` alone resolves to over six
+thousand permissions — the full granted set across all five roles is 6,635 — and
+Google can widen it at any time. Every widening silently expands what this module
+grants in every org that took the default, and the deny list only ever catches
+what someone thought to name. An enumerated, audited role set would fail closed
+instead; that is the right end state and it is not what ships today. Until it
+does, `org_viewer_roles` is the lever, and the audit recipe below is the way to
+see what you have actually granted.
 
 `denied_permissions` and `additional_denied_permissions` are concatenated, so
 extending the default set never means restating it. Narrowing `org_viewer_roles`

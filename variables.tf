@@ -266,6 +266,33 @@ variable "denied_permissions" {
     "datastore.googleapis.com/entities.list",
     "spanner.googleapis.com/sessions.create",
     "pubsub.googleapis.com/subscriptions.consume",
+
+    # Live credentials and source, which roles/viewer grants and the original
+    # list missed. getKeyString is the sharpest: it returns a usable API key
+    # rather than metadata about one, which is a different category from the
+    # configuration-disclosure paths above.
+    "apikeys.googleapis.com/keys.getKeyString",
+    "cloudfunctions.googleapis.com/functions.sourceCodeGet",
+
+    # Vertex AI agent memory, sessions and cached prompts. These hold arbitrary
+    # user-supplied content, which for this module's audience is the most likely
+    # place for a customer's own end-user data to sit.
+    "aiplatform.googleapis.com/memories.get",
+    "aiplatform.googleapis.com/memories.list",
+    "aiplatform.googleapis.com/memories.retrieve",
+    "aiplatform.googleapis.com/sessions.get",
+    "aiplatform.googleapis.com/sessions.list",
+    "aiplatform.googleapis.com/sessionEvents.list",
+    "aiplatform.googleapis.com/cachedContents.get",
+    "aiplatform.googleapis.com/cachedContents.list",
+
+    # Every string above was verified against a live deny policy before shipping,
+    # not against the documentation. That check is not optional: an unsupported
+    # permission is rejected at CREATE time, so it would fail every customer's
+    # apply rather than failing review. It caught two —
+    # runtimeconfig.googleapis.com/variables.get and .list are NOT deniable,
+    # though roles/viewer grants both. They are listed in the README as an
+    # uncovered path instead, because that is what they are.
   ]
 
   # A deny rule with no permissions is rejected by the API, which would surface
