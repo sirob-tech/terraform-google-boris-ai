@@ -37,9 +37,24 @@ locals {
 
   # Required APIs on the hosting project. STS is required for the WIF token
   # exchange; serviceusage is required to read enabled-API state.
+  #
+  # cloudcli and container back the live-access tools: cloudcli is the Cloud CLI
+  # Execution API behind run_gcloud_command, and container hosts the GKE managed
+  # MCP server behind the live Kubernetes reads. Both are onboarding gates — the
+  # tools return a permission error, not a feature-disabled message, when they
+  # are missing.
+  #
+  # Enablement is eventually consistent, ~1 minute observed during the spike, and
+  # a stale denial looks exactly like a missing grant. Treat the first live call
+  # after an apply as settle-and-retry rather than a verdict.
+  #
+  # cloudcli is a Preview API and is not covered by the Cloud TOS — see the
+  # "Live access" section of the README before enabling it in a regulated estate.
   required_apis = [
     "cloudasset.googleapis.com",
+    "cloudcli.googleapis.com",
     "cloudresourcemanager.googleapis.com",
+    "container.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
     "sts.googleapis.com",

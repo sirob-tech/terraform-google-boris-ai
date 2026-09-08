@@ -30,6 +30,11 @@ output "workload_identity_provider" {
   value       = google_iam_workload_identity_pool_provider.aws.name
 }
 
+output "mcp_custom_role" {
+  description = "Full resource name of the custom role carrying mcp.tools.call, bound to boris-reader. Lets an operator confirm the live-access gate without console access."
+  value       = google_project_iam_custom_role.mcp_tool_caller.name
+}
+
 # Ready-to-run manual registration command (fallback when self-registration is
 # off). The customer authenticates it with the connection secret they were
 # issued, which they supply from their own shell — see below.

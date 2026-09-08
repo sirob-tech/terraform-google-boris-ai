@@ -178,6 +178,25 @@ variable "additional_org_roles" {
 }
 
 # ---------------------------------------------------------------------------
+# Live access (managed MCP)
+# ---------------------------------------------------------------------------
+
+variable "mcp_custom_role_id" {
+  type        = string
+  description = "Role ID of the custom role carrying mcp.tools.call, which lets boris-reader call GCP's managed MCP servers. Project-scoped, so a fixed literal is safe here — unlike the deny policy, which attaches to the shared organization and needs a per-customer suffix. Role IDs beginning \"goog\" are reserved by Google."
+  default     = "borisMcpToolCaller"
+
+  # GCP custom role IDs are 3-64 characters of letters, digits, underscores and
+  # periods. Validated here so a bad value fails at plan time rather than partway
+  # through apply. The reserved-prefix rule is documented above rather than
+  # encoded, so a future legitimate value is not blocked by a guess.
+  validation {
+    condition     = can(regex("^[a-zA-Z0-9_.]{3,64}$", var.mcp_custom_role_id))
+    error_message = "mcp_custom_role_id must be 3-64 characters of letters, digits, \"_\" or \".\"."
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Sensitive-data deny policy (required by default)
 # ---------------------------------------------------------------------------
 

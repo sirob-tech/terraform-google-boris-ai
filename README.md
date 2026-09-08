@@ -28,8 +28,14 @@ In your organization:
   (Secret Manager, GCS object reads, SA key/token operations, BigQuery table
   data, Datastore/Spanner/Pub-Sub payloads, KMS decrypt) for `boris-reader`.
   Required by default; disable with `enable_deny_policy = false`.
+- A **custom role carrying `mcp.tools.call`**, bound to `boris-reader` on the
+  hosting project, which lets B.O.R.I.S call GCP's managed MCP servers. No
+  predefined role carries that permission — see
+  [Live access](#live-access-managed-mcp).
 - Required APIs enabled on a **hosting project** (created with a deterministic,
-  customer-derived ID, or an existing one you supply).
+  customer-derived ID, or an existing one you supply): `cloudasset`,
+  `cloudresourcemanager`, `iam`, `iamcredentials`, `sts` and `serviceusage`, plus
+  `cloudcli` and `container` for live access.
 
 ### Read scope, and what the deny policy does not cover
 
@@ -63,6 +69,14 @@ lever is `org_viewer_roles`: drop `roles/viewer` for a narrower set such as
 `roles/container.viewer`, which does not grant Secret access. Confirm what your own
 org grants with `gcloud iam roles describe roles/viewer`.
 
+On the **live** Kubernetes read path B.O.R.I.S ships (see below) the picture is
+better, because the control does not have to be a deny policy. A Secret read is
+refused twice — Google's managed MCP server returns nothing for one, and
+B.O.R.I.S refuses the kind before the call is made. A ConfigMap read, which
+Google *does* serve in full including its `data` map, is refused by that same
+client-side guard. Neither refusal depends on the deny policy, so both hold in an
+org where `container.secrets.*` is undeniable.
+
 This table is what we are aware of, not a proof of exhaustiveness — `roles/viewer`
 is a basic role and Google can widen it. To audit the remainder, diff
 `gcloud iam roles describe roles/viewer` against the `denied_permissions` default
@@ -71,6 +85,39 @@ tell the B.O.R.I.S team.
 
 Moving secrets into Secret Manager also closes them off, since the deny policy
 blocks that service in full (`secretmanager.googleapis.com/*.*`).
+
+### Live access (managed MCP)
+
+Two of the enabled APIs and the custom role exist for one capability: letting
+B.O.R.I.S run read-only `gcloud` commands and read live Kubernetes objects, logs
+and events, rather than only querying the daily Cloud Asset Inventory snapshot.
+
+- **`cloudcli.googleapis.com`** — the Cloud CLI Execution API. B.O.R.I.S sends a
+  subcommand from a fixed allowlist; the API also applies Google's own
+  server-side forbidden-command and flag denylists.
+- **`container.googleapis.com`** — hosts the GKE managed MCP server behind the
+  live Kubernetes reads.
+- **The custom role.** Calling either managed MCP server requires
+  `mcp.googleapis.com/tools.call`, and **no predefined role grants it** — of the
+  586 roles grantable on a project, none includes any `mcp.*` permission. A
+  custom role is the only way to grant it, which is why this module creates one
+  instead of binding something off the shelf. It carries that single permission
+  and nothing else; `mcp_custom_role_id` renames it if `borisMcpToolCaller`
+  collides with something in your project.
+
+Three things worth knowing before you apply:
+
+- **`cloudcli` is a Preview API and is not covered by the Cloud TOS.** It carries
+  no SLA. If Preview services are not acceptable in your estate, this is the
+  bullet to escalate — in this module version the two APIs and the role are
+  enabled unconditionally, with no opt-out input.
+- **No GKE-specific role is needed.** `roles/viewer` alone drives the whole live
+  Kubernetes path. Neither `roles/container.viewer` nor
+  `roles/gkehub.gatewayReader` is required, and adding either only widens what
+  you have granted.
+- **Enablement is eventually consistent**, around a minute in our testing, and a
+  stale denial is indistinguishable from a missing grant. If a live read fails
+  immediately after `apply`, retry before treating it as misconfiguration.
 
 ### Everything here is an input you control
 
@@ -257,10 +304,27 @@ with `gcloud organizations list` before applying, and check the plan's
 ### Reusing a project that already has a WIF pool or `boris-reader`
 
 If the project you point at (`create_project = false`) already contains a
-`boris-aws` pool or a `boris-reader` service account, `apply` fails with "already
-exists" — Terraform will not adopt resources it did not create. Either let the
-module create a fresh hosting project, or `terraform import` the existing pool,
-provider, and service account into state first.
+`boris-aws` pool, a `boris-reader` service account or a `borisMcpToolCaller`
+custom role, `apply` fails with "already exists" — Terraform will not adopt
+resources it did not create. Either let the module create a fresh hosting
+project, or `terraform import` what is already there into state first:
+
+```bash
+terraform import 'module.boris_gcp.google_iam_workload_identity_pool.boris' \
+  "projects/<project>/locations/global/workloadIdentityPools/boris-aws"
+terraform import 'module.boris_gcp.google_iam_workload_identity_pool_provider.aws' \
+  "projects/<project>/locations/global/workloadIdentityPools/boris-aws/providers/aws-sts"
+terraform import 'module.boris_gcp.google_service_account.boris_reader' \
+  "projects/<project>/serviceAccounts/boris-reader@<project>.iam.gserviceaccount.com"
+terraform import 'module.boris_gcp.google_project_iam_custom_role.mcp_tool_caller' \
+  "projects/<project>/roles/borisMcpToolCaller"
+```
+
+Enabled APIs need no import — `google_project_service` adopts an already-enabled
+service. The org role bindings and the `mcp.tools.call` binding are
+non-authoritative and re-apply cleanly over an existing grant. An existing deny
+policy does need importing, as
+`google_iam_deny_policy` with the ID from `terraform output` or the console.
 
 ## Offboarding
 
@@ -300,14 +364,23 @@ What the version numbers mean here:
   permission in the granted set, a removal from the deny list, or a breaking
   input change. B.O.R.I.S capabilities that need broader access ship this way, rather
   than silently widening what an existing pin already grants.
+
+  One deliberate exception, recorded rather than hidden: **`1.1.0` adds the
+  `mcp.tools.call` permission and the `cloudcli` and `container` APIs** — a
+  change the rule above would otherwise make major. It shipped as a minor
+  because live access is still under test and `1.0.0` had not been adopted, so
+  there was no existing pin to widen. Read the plan before applying it; from
+  here on the major rule applies as written.
 - **Minor** — new optional inputs, new outputs, additional guardrails.
 - **Patch** — fixes and documentation.
 
 To upgrade, bump the constraint and run `terraform init -upgrade`, then read the
 plan before applying. The plan is the authoritative diff of what changes in your
 org: a release that widens read scope shows up as new
-`google_organization_iam_member` resources, and one that changes the guardrail
-shows up as a change to `google_iam_deny_policy`. Nothing changes until you
+`google_organization_iam_member` resources, one that grants a new project-level
+permission shows up as `google_project_iam_custom_role` plus
+`google_project_iam_member`, and one that changes the guardrail shows up as a
+change to `google_iam_deny_policy`. Nothing changes until you
 apply, so a new release never alters B.O.R.I.S's access on its own.
 
 Downgrading works the same way, though re-narrowing scope may degrade B.O.R.I.S
@@ -328,6 +401,13 @@ features that relied on the wider set.
   reserved prefix at plan time, which catches the common too-short mistake; it does
   not reproduce every GCP naming rule, so an exotic value (a leading or trailing
   hyphen, for instance) can still fail partway through `apply`.
+- The **custom role is a creation, not a grant of something pre-existing**, so a
+  security review that enumerates predefined roles will not find it. It holds
+  exactly one permission, `mcp.tools.call`. Read it back with
+  `gcloud iam roles describe borisMcpToolCaller --project <hosting project>`, or
+  take the `mcp_custom_role` output. Note the permission has two spellings and
+  neither is a typo: custom roles use the short `mcp.tools.call` form, while deny
+  policies use the fully-qualified `mcp.googleapis.com/tools.call` form.
 - The deny list is an explicit, auditable set of permissions — read the
   `denied_permissions` default in `variables.tf` before you apply. It is expressed
   as an org-level control that you own and can inspect, extend, replace, or
