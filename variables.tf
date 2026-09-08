@@ -167,7 +167,19 @@ variable "org_viewer_roles" {
     "roles/browser",
     "roles/iam.securityReviewer",
     "roles/cloudasset.viewer",
-    "roles/serviceusage.serviceUsageViewer",
+
+    # Consumer rather than the narrower serviceUsageViewer, and the difference
+    # is exactly one permission: serviceusage.services.use. Several gcloud
+    # surfaces — Cloud Storage measurably, and any API that bills a request to a
+    # user project — refuse every read without it, including pure metadata
+    # reads. Measured: `gcloud storage buckets list` and `buckets describe` both
+    # returned 403 "does not have serviceusage.services.use access" under
+    # serviceUsageViewer, in every project rather than only in some.
+    #
+    # It is not a data-access grant. It makes boris-reader a *consumer* of the
+    # project, which is what lets a request be attributed to it — so it does let
+    # B.O.R.I.S spend your API quota, and grants nothing further.
+    "roles/serviceusage.serviceUsageConsumer",
   ]
 }
 

@@ -23,7 +23,7 @@ In your organization:
   binding that lets the federated identity impersonate it.
 - **Org-level read-only role bindings**: `roles/viewer`, `roles/browser`,
   `roles/iam.securityReviewer`, `roles/cloudasset.viewer`,
-  `roles/serviceusage.serviceUsageViewer`.
+  `roles/serviceusage.serviceUsageConsumer`.
 - A **sensitive-data deny policy** (org-level) blocking data-plane reads
   (Secret Manager, GCS object reads, SA key/token operations, BigQuery table
   data, Datastore/Spanner/Pub-Sub payloads, KMS decrypt) for `boris-reader`.
@@ -118,6 +118,14 @@ Three things worth knowing before you apply:
 - **Enablement is eventually consistent**, around a minute in our testing, and a
   stale denial is indistinguishable from a missing grant. If a live read fails
   immediately after `apply`, retry before treating it as misconfiguration.
+- **`roles/serviceusage.serviceUsageConsumer` is in the granted set for this,
+  not `serviceUsageViewer`.** The two differ by exactly one permission,
+  `serviceusage.services.use`, and several gcloud surfaces refuse *every* read
+  without it — Cloud Storage measurably so, including bucket metadata that
+  `roles/viewer` already permits. It is not a data-access grant: it makes
+  `boris-reader` a consumer of the project, which is what allows a request to be
+  billed to it. The practical consequence is that B.O.R.I.S can spend your API
+  quota, which it could already do on the hosting project.
 
 ### Everything here is an input you control
 
@@ -366,8 +374,10 @@ What the version numbers mean here:
   than silently widening what an existing pin already grants.
 
   One deliberate exception, recorded rather than hidden: **`1.1.0` adds the
-  `mcp.tools.call` permission and the `cloudcli` and `container` APIs** — a
-  change the rule above would otherwise make major. It shipped as a minor
+  `mcp.tools.call` permission, the `cloudcli` and `container` APIs, and swaps
+  `roles/serviceusage.serviceUsageViewer` for
+  `roles/serviceusage.serviceUsageConsumer`** — changes the rule above would
+  otherwise make major. It shipped as a minor
   because live access is still under test and `1.0.0` had not been adopted, so
   there was no existing pin to widen. Read the plan before applying it; from
   here on the major rule applies as written.
