@@ -27,10 +27,34 @@ locals {
   # the provider's attribute condition and the SA impersonation binding pin.
   assumed_role_arn = "arn:aws:sts::${var.vendor_aws_account_id}:assumed-role/${var.gcp_access_role_name}"
 
-  # CEL mapping applied to the AWS WIF provider. google.subject must stay under
-  # 127 bytes, so the assumed-role ARN is normalized to drop the session name.
-  # This is Google's standard attribute.aws_role mapping.
+  # CEL mapping applied to the AWS WIF provider. Google's standard
+  # attribute.aws_role mapping: the assumed-role ARN normalized to drop the
+  # session name, so every session of the role maps to one stable value.
+  #
+  # This one must keep dropping the session name. It is what attribute_condition
+  # pins and what the impersonation binding's principalSet addresses — fold the
+  # session name in here and both stop matching, which is the failure mode
+  # sirob-tech/infra#237 spent six weeks on.
   aws_role_mapping = "assertion.arn.contains('assumed-role') ? assertion.arn.extract('{account_arn}assumed-role/') + 'assumed-role/' + assertion.arn.extract('assumed-role/{role_name}/') : assertion.arn"
+
+  # The subject, by contrast, keeps the session name. google.subject is what
+  # lands in your Cloud Audit Logs, so this is the whole of the attribution:
+  # without it every read from every conversation is one indistinguishable
+  # principal. Nothing keys off the subject — not the condition, not the
+  # binding — so widening it here changes what is logged and nothing else.
+  #
+  # google.subject is capped at 127 bytes. The ARN prefix is
+  # "arn:aws:sts::<12-digit account>:assumed-role/<role>/", so the budget left
+  # for the session name is 127 - 39 - length(role name); with the default
+  # 19-character role that is 69, comfortably above the 64 AWS itself allows.
+  # A role name longer than 24 characters starts eating into it.
+  aws_subject_mapping = "assertion.arn"
+
+  # Session name on its own, so a future condition or log filter can address it
+  # without re-parsing the ARN. Extracted against the pinned role name, which is
+  # exact — the generic "everything after assumed-role/" form would also capture
+  # the role.
+  aws_session_name_mapping = "assertion.arn.contains('assumed-role') ? assertion.arn.extract('assumed-role/${var.gcp_access_role_name}/{session_name}') : ''"
 
   # Federated principal scoped to the dedicated role only (never pool-wide).
   wif_principal = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.boris.name}/attribute.aws_role/${local.assumed_role_arn}"

@@ -135,6 +135,52 @@ Three things worth knowing before you apply:
   billed to it. The practical consequence is that B.O.R.I.S can spend your API
   quota, which it could already do on the hosting project.
 
+### Telling one B.O.R.I.S read from another in your audit log
+
+Every read B.O.R.I.S makes lands in your Cloud Audit Logs as the same
+`principalEmail` — `boris-reader@<hosting-project>.iam.gserviceaccount.com` —
+because it impersonates that one service account for everything. Filtering on
+`principalEmail` alone therefore tells you *that* B.O.R.I.S read something, never
+which conversation asked.
+
+The discriminator is one level down, in the delegation chain:
+
+```
+protoPayload.authenticationInfo.serviceAccountDelegationInfo[0].principalSubject
+```
+
+which reads, in full:
+
+```
+principal://iam.googleapis.com/projects/<number>/locations/global/
+  workloadIdentityPools/boris-aws/subject/
+  arn:aws:sts::<vendor-account>:assumed-role/boris-ai-gcp-access/<session>
+```
+
+That trailing `<session>` is a per-conversation identifier. To pull every read
+belonging to one conversation:
+
+```bash
+gcloud logging read \
+  'protoPayload.authenticationInfo.serviceAccountDelegationInfo.principalSubject:"<session>"' \
+  --project <your-project> --freshness 24h
+```
+
+Three things to know before relying on it:
+
+- **You must switch Data Access audit logs on.** They are off by default for
+  every service except BigQuery, and while they are off none of these entries
+  exist at all — not the read, not the delegation chain, nothing. Enable
+  `ADMIN_READ` and `DATA_READ` for the services you care about.
+- **Do not use `principalSubject` at the top level.** It is inconsistent: Cloud
+  Resource Manager fills it with the service account, and Cloud Storage leaves it
+  empty. `serviceAccountDelegationInfo` is the field that carries the session.
+- **This is traceability, not a security boundary.** A role session name is
+  self-asserted — whoever assumes the AWS role chooses it. It answers "which
+  conversation caused this read" for debugging and billing. It cannot tell you
+  whether a caller was honest about who it was, and nothing should be built as
+  though it could.
+
 ### Everything here is an input you control
 
 Neither the granted roles nor the deny list is baked in. Both are variables whose

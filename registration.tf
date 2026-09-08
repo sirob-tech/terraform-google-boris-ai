@@ -77,18 +77,18 @@ resource "terraform_data" "register" {
             exit 0
             ;;
           401)
-            echo "boris: registration was refused: the connection secret was not accepted." >&2
-            echo "boris: this does not clear by retrying. Ask the B.O.R.I.S team to re-issue it." >&2
+            echo "B.O.R.I.S: registration was refused: the connection secret was not accepted." >&2
+            echo "B.O.R.I.S: this does not clear by retrying. Ask the B.O.R.I.S team to re-issue it." >&2
             exit 1
             ;;
           409)
-            echo "boris: registration was refused: $message" >&2
-            echo "boris: this does not clear by retrying — contact the B.O.R.I.S team." >&2
+            echo "B.O.R.I.S: registration was refused: $message" >&2
+            echo "B.O.R.I.S: this does not clear by retrying — contact the B.O.R.I.S team." >&2
             exit 1
             ;;
           4??)
-            echo "boris: registration was rejected (HTTP $code): $message" >&2
-            echo "boris: this does not clear by retrying. Check the module inputs, then contact the B.O.R.I.S team." >&2
+            echo "B.O.R.I.S: registration was rejected (HTTP $code): $message" >&2
+            echo "B.O.R.I.S: this does not clear by retrying. Check the module inputs, then contact the B.O.R.I.S team." >&2
             exit 1
             ;;
           *)
@@ -96,11 +96,11 @@ resource "terraform_data" "register" {
             # default-value expansion. A transport failure still yields a status
             # (curl writes 000); the empty case is curl missing from PATH entirely,
             # which would otherwise print "(HTTP )".
-            echo "boris: registration attempt failed (HTTP $${code:-no response}); retrying" >&2
+            echo "B.O.R.I.S: registration attempt failed (HTTP $${code:-no response}); retrying" >&2
             ;;
         esac
       done
-      echo "boris: registration failed after retries. Verify the module applied cleanly, then re-run 'terraform apply', or register manually with the registration_curl output." >&2
+      echo "B.O.R.I.S: registration failed after retries. Verify the module applied cleanly, then re-run 'terraform apply', or register manually with the registration_curl output." >&2
       exit 1
     EOT
   }
