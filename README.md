@@ -118,6 +118,14 @@ Three things worth knowing before you apply:
 - **Enablement is eventually consistent**, around a minute in our testing, and a
   stale denial is indistinguishable from a missing grant. If a live read fails
   immediately after `apply`, retry before treating it as misconfiguration.
+- **`gcloud` reads are rate-limited to roughly 6 per minute for your whole
+  organization**, and the limit has no self-service increase. The quota is
+  charged to the project the command executes in — the hosting project — not to
+  the project being read, so pointing reads at different projects does not raise
+  the ceiling. Two people asking B.O.R.I.S about your GCP estate at the same
+  time will contend for the same six calls. The Cloud Asset Inventory path that
+  `list_gcp_resources` uses is not affected; this applies only to
+  `run_gcloud_command`.
 - **`roles/serviceusage.serviceUsageConsumer` is in the granted set for this,
   not `serviceUsageViewer`.** The two differ by exactly one permission,
   `serviceusage.services.use`, and several gcloud surfaces refuse *every* read
