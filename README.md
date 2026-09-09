@@ -274,8 +274,14 @@ export BORIS_CONNECTION_SECRET='boris_...'
 curl -X PUT 'https://install.getboris.ai/gcp/install/<org_id>' \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $BORIS_CONNECTION_SECRET" \
-  -d '{"project_number":"<n>","service_account_email":"<sa>"}'
+  -d '{"project_number":"<n>","service_account_email":"<sa>","hosting_project_id":"<project-id>"}'
 ```
+
+`hosting_project_id` is the hosting project's **ID**, not its number. B.O.R.I.S
+publishes it as `execution_project`, which its live GCP tools require. It is
+optional on the endpoint so that older module versions keep applying, but a
+registration without it cannot be used for live access — the
+`registration_curl` output already includes it.
 
 Or set `enable_self_registration = true`, `registration_endpoint` and
 `connection_secret` to have the module PUT it for you inside `apply` (idempotent
@@ -311,18 +317,25 @@ Runnable configurations for both shapes are in
 [`examples/`](examples): `create-project` (module creates the hosting project)
 and `existing-project` (reuse your own project, with self-registration on).
 
-### One organization per customer
+### Registering more than one organization
 
-Register **one GCP org per `customer_id`**: the registration endpoint rejects a
-second, different org for the same customer.
+One `customer_id` may register **several GCP organizations**. Each one needs its
+own connection secret and its own instance of this module, because a secret binds
+to the first organization it registers and cannot afterwards be moved — that is
+what the `409` means. Ask the B.O.R.I.S team for one secret per organization; a
+secret already spent on one organization will refuse the next.
 
-It also matters here: the derived hosting-project ID is keyed on `customer_id`
-and `project_id_prefix` only, not on `organization_id`. Since GCP project IDs are
-globally unique, applying this module twice for one `customer_id` against two
-orgs derives the *same* project ID and the second `apply` fails with "already
-exists". If you genuinely need a second org, set an explicit distinct
-`project_id` (or `project_id_prefix`) for it and talk to the B.O.R.I.S team first —
-the mapping will not accept both.
+One `customer_id` stays one data boundary across all of them: one graph, one
+knowledge base, one account-level role. Registering a second organization widens
+what B.O.R.I.S can read, it does not create a second tenant.
+
+**Give each organization its own project ID.** The derived hosting-project ID is
+keyed on `customer_id` and `project_id_prefix` only, never on
+`organization_id`. Since GCP project IDs are globally unique, a second apply for
+the same `customer_id` derives the *same* ID and fails with "already exists". So
+for every organization after the first, set a distinct `project_id` — or a
+distinct `project_id_prefix` and let the module derive one. Nothing else about
+the second registration needs coordination.
 
 ### Registration timing
 
@@ -339,7 +352,9 @@ minutes of backoff between them. Each attempt can also spend up to its 60-second
 `--max-time`, so a fully stalled endpoint holds `apply` for up to roughly eleven
 minutes before failing. Any 4xx —
 including a refused secret (401) and a conflicting registration (409) — fails
-immediately instead, since those do not clear on their own.
+immediately instead, since those do not clear on their own. A `409` here means
+this secret is already bound to a different organization, not that your customer
+already has one.
 
 ## Deployer prerequisites
 
@@ -437,9 +452,19 @@ policy does need importing, as
 ## Offboarding
 
 `terraform destroy` removes all customer-side access (pool, provider, SA,
-bindings, deny policy, and the hosting project if this module created it). It
-does **not** call the B.O.R.I.S DELETE endpoint — that is authenticated/team-only;
-ask the B.O.R.I.S team to deregister the mapping.
+bindings, deny policy, and the hosting project if this module created it). That
+is the whole of what you can do unaided, and it is the half that actually revokes
+access.
+
+There is **no B.O.R.I.S deregistration endpoint** to call — not one this module
+withholds, one that does not exist. Removing an organization is an operator
+action: ask the B.O.R.I.S team to revoke the connection and delete the published
+registration for that organization. Until they do, the record remains but grants
+nothing, because every credential it names is gone.
+
+If you registered several organizations, destroying one module instance offboards
+only that organization. The others keep working — separate secrets, separate
+registrations.
 
 ### Re-onboarding after a destroy
 

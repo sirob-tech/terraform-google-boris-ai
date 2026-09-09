@@ -108,5 +108,13 @@ locals {
   registration_body = jsonencode({
     project_number        = local.hosting_project_number
     service_account_email = google_service_account.boris_reader.email
+
+    # The hosting project's ID, not its number. B.O.R.I.S publishes it as
+    # execution_project, which its live GCP tools require: those tools bill and
+    # attribute API calls to a project, and the number is not accepted there.
+    # Optional on the endpoint, because modules older than this one do not send
+    # it and requiring it would break their next apply — but a registration
+    # without it cannot be used for live access, so send it.
+    hosting_project_id = local.hosting_project_id
   })
 }
