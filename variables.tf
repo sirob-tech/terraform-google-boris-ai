@@ -71,6 +71,24 @@ variable "project_id" {
     condition     = var.create_project || length(var.project_id) > 0
     error_message = "project_id is required when create_project is false."
   }
+
+  # Constrained to GCP's own project-ID grammar: 6-30 characters, lowercase
+  # letters, digits and hyphens, starting with a letter and not ending in one.
+  # Two reasons, and the second is why this is not merely tidy.
+  #
+  # A wrong value here otherwise surfaces as a confusing "not found" from the
+  # data source, or as a create that GCP rejects late in the apply.
+  #
+  # More importantly, this value now reaches the registration local-exec through
+  # local.hosting_project_id, and the comment above that provisioner states that
+  # every interpolated value is constrained to a shell-safe character set. That
+  # claim was true while project_id was interpolated nowhere; it is this
+  # validation that keeps it true. The derived ID needs no such guard -
+  # project_id_prefix is already constrained and the rest is hex.
+  validation {
+    condition     = var.project_id == "" || can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.project_id))
+    error_message = "project_id must be a valid GCP project ID: 6-30 characters, lowercase letters, digits and hyphens, starting with a letter and not ending with a hyphen."
+  }
 }
 
 variable "create_project" {
