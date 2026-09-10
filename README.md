@@ -252,11 +252,14 @@ guardrail on the read access you have already granted.
 ```hcl
 module "boris_gcp" {
   source  = "sirob-tech/boris-ai/google"
-  version = "~> 1.0"
+  version = "~> 2.0"
 
   customer_id           = "00000000-0000-0000-0000-000000000000"
   organization_id       = "123456789012"
   vendor_aws_account_id = "111122223333" # from your B.O.R.I.S install link
+
+  # Where you actively deploy workloads:
+  active_regions = ["europe-west4", "us-east1"]
 
   # Create a hosting project (or set project_id to reuse an existing one):
   create_project  = true
@@ -274,7 +277,7 @@ export BORIS_CONNECTION_SECRET='boris_...'
 curl -X PUT 'https://install.getboris.ai/gcp/install/<org_id>' \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $BORIS_CONNECTION_SECRET" \
-  -d '{"project_number":"<n>","service_account_email":"<sa>","hosting_project_id":"<project-id>"}'
+  -d '{"project_number":"<n>","service_account_email":"<sa>","hosting_project_id":"<project-id>","active_regions":["europe-west4","us-east1"]}'
 ```
 
 `hosting_project_id` is the hosting project's **ID**, not its number. B.O.R.I.S
@@ -286,6 +289,63 @@ registration without it cannot be used for live access — the
 Or set `enable_self_registration = true`, `registration_endpoint` and
 `connection_secret` to have the module PUT it for you inside `apply` (idempotent
 on re-apply).
+
+### `active_regions`
+
+**`active_regions` is the regions where you actively deploy workloads.** It
+scopes what the B.O.R.I.S memory scrape *retains*; it does not restrict what
+B.O.R.I.S reads, and nothing refuses a read because of it. It is not a security
+control — the deny policy and the role set are what bound access.
+
+It is **required**, with at least one entry, and there is no "everywhere" value:
+the list is a statement about your estate rather than a filter you switch off.
+
+Entries are bare, lowercase region names — `us-east1`, `europe-west4`. Three
+kinds of value are rejected, two of them at `plan` time by this module and the
+third by the endpoint:
+
+- **A zone is not a region.** Declare its parent: `us-central1` covers
+  `us-central1-a`. A zonal asset is emphatically not exempt — it is exactly what
+  the retention rule matches, via its parent region.
+- **Multi-regions (`us`, `eu`, `asia`), dual-regions (`nam4`, `eur4`, `asia1`)
+  and `global` cannot be declared.** Assets in those locations are always
+  retained, so there is nothing to scope.
+- **A well-shaped value that is not a real region** — `eu-west1`, or the typo
+  `us-centarl1` — is refused by the endpoint, which holds the authoritative
+  list. This module deliberately does not carry a copy: it would go stale every
+  time Google opens a region and block you until the module was re-released.
+  Note that `eu-west1` and `ca-central1` are neither GCP nor AWS spellings; AWS
+  writes `eu-west-1` and `ca-central-1`, with a hyphen before the digit.
+
+Editing the list re-registers on your next `apply`. That is what the
+`triggers_replace` entry is for — without it you would get "No changes", no
+`PUT`, and a clean apply as false evidence that B.O.R.I.S had agreed.
+
+The order you write them in does not matter: the module sorts and deduplicates
+before sending, which is also what the endpoint stores.
+
+#### Upgrading from `1.x`
+
+Two things change together, and both are needed:
+
+```hcl
+version = "~> 2.0"                            # was "~> 1.0"
+
+active_regions = ["europe-west4", "us-east1"] # new, required
+```
+
+`active_regions` has no default, so the `plan` fails naming the variable until
+you set it. That is deliberate — the alternative is a `400` several seconds
+into an `apply` that has already created real infrastructure.
+
+The endpoint began requiring the field for **all** callers at once, so a
+workspace still on `1.x` gets a `400` on its next `apply` whether or not it was
+changing anything. There is no version of this module that keeps applying
+against the current endpoint without `active_regions`, and no ordering avoids
+that: the endpoint rejects unknown fields too, so a module sending
+`active_regions` to an endpoint that did not yet require it would have failed
+the same way. Upgrading is the fix, and it also delivers `hosting_project_id`
+if you were on a version before `1.2.0`.
 
 ### The connection secret
 
@@ -488,7 +548,7 @@ determines exactly what access you have granted. Pin it:
 
 ```hcl
 source  = "sirob-tech/boris-ai/google"
-version = "~> 1.0"
+version = "~> 2.0"
 ```
 
 What the version numbers mean here:
@@ -506,6 +566,11 @@ What the version numbers mean here:
   because live access is still under test and `1.0.0` had not been adopted, so
   there was no existing pin to widen. Read the plan before applying it; from
   here on the major rule applies as written.
+
+  **`2.0.0` adds the required `active_regions` input**, and is major for that
+  reason alone — it grants no new access and removes nothing from the deny
+  list. A `~> 1.0` pin will not resolve it, which is deliberate: adopting it is
+  a decision, not something a clean CI workspace does on its own.
 - **Minor** — new optional inputs, new outputs, additional guardrails.
 - **Patch** — fixes and documentation.
 

@@ -100,11 +100,30 @@ locals {
   # typo it is.
   registration_endpoint = trimsuffix(var.registration_endpoint, "/")
 
+  # The declared regions in the form B.O.R.I.S itself stores: deduplicated and
+  # sorted. The endpoint canonicalises anyway, so this changes nothing about
+  # what is registered — it makes the value *stable*, which matters because it
+  # is also a registration trigger. Without it, reordering the list in your
+  # tfvars would re-fire the PUT and re-register identical values.
+  #
+  # sort and distinct cannot introduce a character the variable's per-element
+  # validation did not already allow, so what was validated and what is sent
+  # here are the same set of strings. That equivalence is the whole of the
+  # shell-safety argument for this field — see the validation in variables.tf.
+  active_regions = sort(distinct(var.active_regions))
+
   # Registration request body. The organization is NOT in here: it is the tenant
   # and travels in the path, so duplicating it would create two sources for one
   # value. Built with jsonencode rather than a hand-written string so quoting is
   # the encoder's problem, and single-quoted in the shell command — jsonencode
   # emits double quotes and never single ones, so the two cannot collide.
+  #
+  # That last point does not extend to the *values*. jsonencode escapes a double
+  # quote and leaves a single quote alone, so a single quote inside any value
+  # would close the shell string early. Every value here is therefore
+  # constrained by variable validation to a charset that has no single quote in
+  # it — for active_regions, which is customer-supplied free text in a way the
+  # others are not, that validation is the only such control.
   registration_body = jsonencode({
     project_number        = local.hosting_project_number
     service_account_email = google_service_account.boris_reader.email
@@ -116,5 +135,12 @@ locals {
     # it and requiring it would break their next apply — but a registration
     # without it cannot be used for live access, so send it.
     hosting_project_id = local.hosting_project_id
+
+    # Where you actively deploy workloads. Required by the endpoint, with at
+    # least one entry: it scopes what the memory scrape retains, and it does not
+    # restrict what B.O.R.I.S reads. A JSON array rather than the
+    # comma-separated string the AWS module sends — the published document is a
+    # cross-repo contract, and JSON carries the structure there.
+    active_regions = local.active_regions
   })
 }

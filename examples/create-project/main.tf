@@ -22,12 +22,16 @@ provider "google" {}
 module "boris_gcp" {
   # Published as:
   #   source  = "sirob-tech/boris-ai/google"
-  #   version = "~> 1.0"
+  #   version = "~> 2.0"
   source = "../../"
 
   customer_id           = "00000000-0000-0000-0000-000000000000"
   organization_id       = "123456789012"
   vendor_aws_account_id = "111122223333"
+
+  # The regions where you actively deploy workloads. This scopes what the
+  # B.O.R.I.S memory scrape retains; it does not restrict what B.O.R.I.S reads.
+  active_regions = ["europe-west4", "us-east1"]
 
   create_project  = true
   billing_account = "XXXXXX-XXXXXX-XXXXXX"

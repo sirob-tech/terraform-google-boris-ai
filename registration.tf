@@ -52,15 +52,34 @@ resource "terraform_data" "register" {
     # accepts a repeat for the same organization precisely so a corrected value
     # can be re-sent.
     hosting_project_id = local.hosting_project_id
+
+    # active_regions is the value most likely to change on its own, and the one
+    # where a missed trigger is hardest to notice: editing your region list is a
+    # deliberate act, so "No changes" reads as confirmation that B.O.R.I.S already
+    # agrees. It would not — no PUT would be sent, the old list would stay
+    # published, and the clean apply would be false evidence of it.
+    #
+    # The canonical local, not var.active_regions, so reordering the list is not
+    # a change. The endpoint sorts and deduplicates too, so a reordering PUT
+    # would register byte-identical values.
+    active_regions = join(",", local.active_regions)
   }
 
   # All interpolated values are constrained to shell-safe character sets by the
   # variable validations (organization_id / vendor account: digits;
-  # service_account_id: SA-id chars; registration_endpoint: https URL chars), so
-  # no shell metacharacters can reach this command. The secret is the exception
-  # and is never interpolated — it arrives through the environment block below,
-  # so it stays out of the command string, out of state, and out of any log of
-  # the rendered command.
+  # service_account_id: SA-id chars; registration_endpoint: https URL chars;
+  # active_regions: lowercase letters, digits and a hyphen, per element), so no
+  # shell metacharacters can reach this command. The secret is the exception and
+  # is never interpolated — it arrives through the environment block below, so it
+  # stays out of the command string, out of state, and out of any log of the
+  # rendered command.
+  #
+  # active_regions is the one of those that is genuinely free text from the
+  # customer, so its validation is doing real work rather than restating a
+  # format. jsonencode does not escape a single quote, and $body is single-quoted
+  # below: one quote in one region name would end the string and hand the rest to
+  # the shell. Nothing the endpoint does can catch that — this command runs
+  # before the request exists.
   #
   # --connect-timeout / --max-time keep a stalled endpoint from hanging apply.
   #
