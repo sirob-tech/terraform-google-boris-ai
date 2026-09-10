@@ -328,6 +328,55 @@ variable "additional_denied_permissions" {
 }
 
 # ---------------------------------------------------------------------------
+# Registration values
+# ---------------------------------------------------------------------------
+
+variable "active_regions" {
+  type        = list(string)
+  description = "The GCP regions where you actively deploy workloads, as bare region names (e.g. [\"europe-west4\", \"us-east1\"]). This scopes what the B.O.R.I.S memory scrape retains; it does not restrict what B.O.R.I.S reads. Required, with at least one entry."
+
+  # No default, deliberately. The endpoint requires the field on every
+  # registration, and it is sent on both paths — the self-registration
+  # local-exec and the registration_curl output — so there is no configuration
+  # in which leaving it unset produces a working registration. A missing
+  # required variable is a plan-time error naming the variable; the alternative
+  # is a 400 several seconds into an apply that has already created real
+  # infrastructure, or, on the manual path, a pasted command that fails.
+  #
+  # This is what makes upgrading to this module version a coordinated step: a
+  # workspace on an earlier version has no value to carry forward and will not
+  # plan until one is supplied.
+
+  validation {
+    condition     = length(var.active_regions) > 0
+    error_message = "active_regions must list at least one region. An empty list is refused by the endpoint — there is no \"everywhere\" value, because the list is a statement about your estate rather than a filter to switch off."
+  }
+
+  # Per-element shape, and this validation is load-bearing beyond catching
+  # typos. registration.tf interpolates the rendered body into a single-quoted
+  # shell string, and jsonencode does not escape a single quote — so for this
+  # field the module's own validation is the only control between a region name
+  # and the shell in your Terraform runner. Nothing the endpoint does can
+  # substitute for it: the shell runs before the request is ever made.
+  #
+  # The pattern mirrors the endpoint's own shape check. Two digits because
+  # europe-west10, -west12 and -west15 are real. It is applied to the raw
+  # variable, and locals.tf sends sort(distinct(...)) of the same strings —
+  # neither function can introduce a character the pattern did not allow, so
+  # what is validated here and what is sent are the same set.
+  #
+  # What it deliberately does not do is check the region *exists*. That list
+  # changes as Google opens regions, and a copy of it here would block a
+  # legitimate customer until the module was re-released. The endpoint holds the
+  # authoritative list and rejects a well-shaped non-region such as "eu-west1"
+  # with a message naming the real spelling.
+  validation {
+    condition     = alltrue([for r in var.active_regions : can(regex("^[a-z]{2,}-[a-z]+[0-9]{1,2}$", r))])
+    error_message = "Each entry in active_regions must be a bare lowercase GCP region, e.g. \"us-east1\" or \"europe-west4\". A zone is not a region — declare its parent region (\"us-central1\" covers \"us-central1-a\"). The multi-regions \"us\", \"eu\" and \"asia\", the dual-regions \"nam4\", \"eur4\" and \"asia1\", and \"global\" cannot be declared: assets in those locations are always retained, so there is nothing to scope."
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Optional self-registration (single-apply onboarding)
 # ---------------------------------------------------------------------------
 
