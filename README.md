@@ -270,14 +270,23 @@ output "register" { value = module.boris_gcp.registration_curl }
 ```
 
 Then register (fallback manual path). The secret comes from your shell, not from
-Terraform — see [The connection secret](#the-connection-secret):
+Terraform — see [The connection secret](#the-connection-secret). Read the command
+with `terraform output -raw`, which prints it ready to run; plain
+`terraform output` shows the quoted form, whose escaped `\"` would be sent
+literally and rejected as malformed JSON:
 
 ```
 export BORIS_CONNECTION_SECRET='boris_...'
+terraform output -raw register
+```
+
+which prints, with the keys in the order `jsonencode` emits them:
+
+```
 curl -X PUT 'https://install.getboris.ai/gcp/install/<org_id>' \
   -H 'Content-Type: application/json' \
   -H "Authorization: Bearer $BORIS_CONNECTION_SECRET" \
-  -d '{"project_number":"<n>","service_account_email":"<sa>","hosting_project_id":"<project-id>","active_regions":["europe-west4","us-east1"]}'
+  -d '{"active_regions":["europe-west4","us-east1"],"hosting_project_id":"<project-id>","project_number":"<n>","service_account_email":"<sa>"}'
 ```
 
 `hosting_project_id` is the hosting project's **ID**, not its number. B.O.R.I.S
@@ -294,15 +303,15 @@ on re-apply).
 
 **`active_regions` is the regions where you actively deploy workloads.** It
 scopes what the B.O.R.I.S memory scrape *retains*; it does not restrict what
-B.O.R.I.S reads, and nothing refuses a read because of it. It is not a security
-control — the deny policy and the role set are what bound access.
+B.O.R.I.S reads, and nothing refuses a read because of it today. It is not a
+security control — the deny policy and the role set are what bound access.
 
 It is **required**, with at least one entry, and there is no "everywhere" value:
 the list is a statement about your estate rather than a filter you switch off.
 
-Entries are bare, lowercase region names — `us-east1`, `europe-west4`. Three
-kinds of value are rejected, two of them at `plan` time by this module and the
-third by the endpoint:
+Entries are bare, lowercase region names — `us-east1`, `europe-west4`. The
+common rejections, two of them at `plan` time by this module and the rest by the
+endpoint:
 
 - **A zone is not a region.** Declare its parent: `us-central1` covers
   `us-central1-a`. A zonal asset is emphatically not exempt — it is exactly what
@@ -311,18 +320,30 @@ third by the endpoint:
   and `global` cannot be declared.** Assets in those locations are always
   retained, so there is nothing to scope.
 - **A well-shaped value that is not a real region** — `eu-west1`, or the typo
-  `us-centarl1` — is refused by the endpoint, which holds the authoritative
-  list. This module deliberately does not carry a copy: it would go stale every
-  time Google opens a region and block you until the module was re-released.
-  Note that `eu-west1` and `ca-central1` are neither GCP nor AWS spellings; AWS
-  writes `eu-west-1` and `ca-central-1`, with a hyphen before the digit.
+  `us-centarl1` — is refused by the endpoint, which holds the region list. This
+  module deliberately does not carry a copy: a service-side list is corrected by
+  a deploy, a module-side one by a release you then have to adopt. Note that
+  `eu-west1` and `ca-central1` are neither GCP nor AWS spellings; AWS writes
+  `eu-west-1` and `ca-central-1`, with a hyphen before the digit. The rejection
+  quotes your entry back and points at the GCP spellings of the AWS names most
+  often confused with them; it does not compute a "did you mean" for an
+  arbitrary typo.
+- **A real region the service has not caught up with.** That list is a
+  maintained snapshot, not a live registry, so a region Google opened very
+  recently can be refused even though you can see it in the console. The
+  rejection says so and asks you to tell the B.O.R.I.S team, which is the fix.
 
-Editing the list re-registers on your next `apply`. That is what the
-`triggers_replace` entry is for — without it you would get "No changes", no
-`PUT`, and a clean apply as false evidence that B.O.R.I.S had agreed.
+The module checks the literal strings you write, so an uppercase or padded entry
+(`US-EAST1`, `" us-east1"`) fails at `plan` even though the endpoint would have
+normalised it. The order you write them in does not matter: the module sorts and
+deduplicates before sending, which is also what the endpoint stores.
 
-The order you write them in does not matter: the module sorts and deduplicates
-before sending, which is also what the endpoint stores.
+**With `enable_self_registration = true`, editing the list re-registers on your
+next `apply`.** That is what the `triggers_replace` entry is for — without it you
+would get "No changes", no `PUT`, and a clean apply as false evidence that
+B.O.R.I.S had agreed. On the manual path (the default), editing the list updates
+the `registration_curl` output, but **nothing is sent until you run that command
+again**.
 
 #### Upgrading from `1.x`
 
@@ -335,17 +356,26 @@ active_regions = ["europe-west4", "us-east1"] # new, required
 ```
 
 `active_regions` has no default, so the `plan` fails naming the variable until
-you set it. That is deliberate — the alternative is a `400` several seconds
-into an `apply` that has already created real infrastructure.
+you set it. That is deliberate — the alternative is a `400` several seconds into
+an `apply` that has already created real infrastructure. (If you pass a value
+Terraform cannot know until apply — one computed from another module or a data
+source — the check is deferred to apply rather than skipped.)
 
-The endpoint began requiring the field for **all** callers at once, so a
-workspace still on `1.x` gets a `400` on its next `apply` whether or not it was
-changing anything. There is no version of this module that keeps applying
-against the current endpoint without `active_regions`, and no ordering avoids
-that: the endpoint rejects unknown fields too, so a module sending
-`active_regions` to an endpoint that did not yet require it would have failed
-the same way. Upgrading is the fix, and it also delivers `hosting_project_id`
-if you were on a version before `1.2.0`.
+**A clean apply on `1.x` is not evidence that your registration still works.**
+The endpoint now requires the field from every GCP caller, but it only rejects a
+request that is actually made, and an unchanged apply does not make one: with
+`enable_self_registration = true` the `PUT` re-fires only when a registered
+value changes, and on the manual path `apply` never contacts the endpoint at
+all. So a `1.x` workspace keeps applying cleanly while its published
+`active_regions` stays absent. What fails is the next *registration* — the next
+apply that changes a registered value, a re-created registration, or the next
+time you run the `registration_curl` command by hand.
+
+That silent staleness is the reason to upgrade rather than wait to be broken. No
+ordering avoided it: the endpoint rejects unknown fields too, so a module
+sending `active_regions` before the endpoint required it would have failed the
+same way. Upgrading also delivers `hosting_project_id` if you were on a version
+before `1.2.0`.
 
 ### The connection secret
 

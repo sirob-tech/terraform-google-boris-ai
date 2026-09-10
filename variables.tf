@@ -372,7 +372,7 @@ variable "active_regions" {
   # with a message naming the real spelling.
   validation {
     condition     = alltrue([for r in var.active_regions : can(regex("^[a-z]{2,}-[a-z]+[0-9]{1,2}$", r))])
-    error_message = "Each entry in active_regions must be a bare lowercase GCP region, e.g. \"us-east1\" or \"europe-west4\". A zone is not a region — declare its parent region (\"us-central1\" covers \"us-central1-a\"). The multi-regions \"us\", \"eu\" and \"asia\", the dual-regions \"nam4\", \"eur4\" and \"asia1\", and \"global\" cannot be declared: assets in those locations are always retained, so there is nothing to scope."
+    error_message = "active_regions entries must each be a bare lowercase GCP region, e.g. \"us-east1\" or \"europe-west4\". A zone is not a region — declare its parent region (\"us-central1\" covers \"us-central1-a\"). The multi-regions \"us\", \"eu\" and \"asia\", the dual-regions \"nam4\", \"eur4\" and \"asia1\", and \"global\" cannot be declared: assets in those locations are always retained, so there is nothing to scope."
   }
 }
 
