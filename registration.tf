@@ -65,14 +65,25 @@ resource "terraform_data" "register" {
     active_regions = join(",", local.active_regions)
   }
 
-  # All interpolated values are constrained to shell-safe character sets by the
-  # variable validations (organization_id / vendor account: digits;
-  # service_account_id: SA-id chars; registration_endpoint: https URL chars;
-  # active_regions: lowercase letters, digits and a hyphen, per element), so no
-  # shell metacharacters can reach this command. The secret is the exception and
-  # is never interpolated — it arrives through the environment block below, so it
-  # stays out of the command string, out of state, and out of any log of the
-  # rendered command.
+  # Everything interpolated into this command is constrained to a shell-safe
+  # character set. Keep this roster exact — it is what a new field in
+  # registration_body has to be audited against.
+  #
+  #   registration_endpoint   var validation: https URL chars
+  #   organization_id         var validation: digits
+  #   project_number          provider-derived, GCP-issued numeric
+  #   service_account_email   var validations: service_account_id (SA-id chars)
+  #                           and the hosting project id, below
+  #   hosting_project_id      var validation: project_id (project-id chars), or
+  #                           derived from project_id_prefix + the hex of
+  #                           customer_id, both validated
+  #   active_regions          var validation: lowercase letters, digits and one
+  #                           hyphen, per element
+  #
+  # So no shell metacharacter can reach this command. The secret is the
+  # exception and is never interpolated — it arrives through the environment
+  # block below, so it stays out of the command string, out of state, and out of
+  # any log of the rendered command.
   #
   # active_regions is the one of those that is genuinely free text from the
   # customer, so its validation is doing real work rather than restating a
